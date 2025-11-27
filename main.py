@@ -1,14 +1,10 @@
-# ==============================================================
-#  Optimized Predictive Maintenance Training Script
-#  with GPU XGBoost + Window Optimization + Progress Bars
-# ==============================================================
-
 import os
 import sys
 import numpy as np
 import pandas as pd
 import joblib
 import warnings
+import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore")
 
 from tqdm import tqdm
@@ -18,12 +14,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 
 np.random.seed(42)
+os.makedirs("plots", exist_ok=True)
 
-
-# -------------------------------------------------------------
-# 1. Dataset Loader
-# -------------------------------------------------------------
-
+# Dataset Loader
 def load_cmapss_data(fd, base_folder="CMaps"):
     fd = int(fd)
 
@@ -62,11 +55,7 @@ def load_cmapss_data(fd, base_folder="CMaps"):
 
     return train_df, test_df, rul_df
 
-
-# -------------------------------------------------------------
-# 2. Compute RUL
-# -------------------------------------------------------------
-
+# Compute RUL
 def compute_rul(df):
     max_c = df.groupby("unit_number")["time_cycles"].max().reset_index()
     max_c.columns = ["unit_number", "max_cycle"]
@@ -75,10 +64,7 @@ def compute_rul(df):
     df = df.drop(columns=["max_cycle"])
     return df
 
-
-# -------------------------------------------------------------
-# 3. FD-Specific Preprocessing
-# -------------------------------------------------------------
+# FD-Specific Preprocessing
 
 def preprocess_for_fd(fd, df):
     drop_cols = ["sensor_1","sensor_5","sensor_10","sensor_16","sensor_19","op_setting_3"]
@@ -89,9 +75,7 @@ def preprocess_for_fd(fd, df):
     return df
 
 
-# -------------------------------------------------------------
-# 4. Rolling Features (optimized)
-# -------------------------------------------------------------
+# Rolling Features (optimized)
 
 def engineer_features(df, win=5):
     df = df.sort_values(["unit_number","time_cycles"])
@@ -106,9 +90,7 @@ def engineer_features(df, win=5):
     return df
 
 
-# -------------------------------------------------------------
-# 5. Windowing (optimized: only last step of window)
-# -------------------------------------------------------------
+# Windowing     
 
 def create_windows(df, window=30):
     feature_cols = [
@@ -134,10 +116,7 @@ def create_windows(df, window=30):
 
     return np.array(X), np.array(y), np.array(units), feature_cols
 
-
-# -------------------------------------------------------------
-# 6. Split by Engine
-# -------------------------------------------------------------
+# Split by Engine
 
 def split_by_engine(X, y, engines):
     unique_eng = np.unique(engines)
@@ -148,10 +127,7 @@ def split_by_engine(X, y, engines):
 
     return X[train_mask], X[test_mask], y[train_mask], y[test_mask]
 
-
-# -------------------------------------------------------------
-# 7. GPU XGBoost
-# -------------------------------------------------------------
+# GPU XGBoost
 
 def get_regressor():
     try:
@@ -171,10 +147,7 @@ def get_regressor():
         print("XGBoost unavailable → Using RandomForest")
         return RandomForestRegressor(n_estimators=200, random_state=42)
 
-
-# -------------------------------------------------------------
-# 8. MAIN TRAINING
-# -------------------------------------------------------------
+# MAIN TRAINING
 
 def train_on_fd(fd):
     print("\n===============================================")
@@ -194,7 +167,6 @@ def train_on_fd(fd):
 
     # Combine
     full_df = pd.concat([train_df, test_df], ignore_index=True)
-
     full_df = preprocess_for_fd(fd, full_df)
     full_df = engineer_features(full_df, win=5)
 
@@ -221,22 +193,76 @@ def train_on_fd(fd):
 
     print(f"\nFD00{fd} Results → RMSE={rmse:.3f}, MAE={mae:.3f}, R2={r2:.3f}")
 
-    # Save
+    def plot_actual_vs_predicted(y_true, y_pred, fd_tag):
+        r2 = r2_score(y_true, y_pred)
+
+        plt.figure(figsize=(8, 6))
+
+        plt.scatter(y_true, y_pred, alpha=0.5, label="Predicted Points")
+
+        max_val = max(max(y_true), max(y_pred))
+        plt.plot([0, max_val], [0, max_val], linestyle='--', color='red', label="Ideal Line")
+
+        plt.title(f"{fd_tag} Actual vs Predicted RUL (R² = {r2:.3f})")
+        plt.xlabel("Actual RUL")
+        plt.ylabel("Predicted RUL")
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.legend()
+
+        filepath = f"plots/{fd_tag}_actual_vs_pred.png"
+        plt.savefig(filepath, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"Saved: {filepath}")
+
+    def plot_error_distribution(y_true, y_pred, fd_tag):
+        errors = y_pred - y_true
+        mse = mean_squared_error(y_true, y_pred)
+        rmse = np.sqrt(mse)
+
+        plt.figure(figsize=(8, 6))
+        plt.hist(errors, bins=40, alpha=0.7)
+
+        plt.title(f"{fd_tag} Prediction Error Distribution")
+        plt.xlabel("Prediction Error (Predicted - Actual)")
+        plt.ylabel("Frequency")
+
+        plt.axvline(0, color='black', linewidth=2, label='Zero Error')
+        plt.axvline(errors.mean(), color='red', linestyle='--', label='Mean Error')
+
+        plt.grid(True, linestyle="--", alpha=0.4)
+        plt.legend()
+        
+        plt.text(
+            0.95, 0.95,
+            f"Mean Error: {errors.mean():.2f}\nSD ~ RMSE: {rmse:.2f}",
+            transform=plt.gca().transAxes,
+            va='top', ha='right',
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
+        )
+
+        filepath = f"plots/{fd_tag}_error_distribution.png"
+        plt.savefig(filepath, dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"Saved: {filepath}")
+
+    # Save Models
     joblib.dump(model,  f"model_FD00{fd}.joblib")
     joblib.dump(scaler, f"scaler_FD00{fd}.joblib")
     joblib.dump(feature_cols, f"features_FD00{fd}.joblib")
     
     print(f"Saved models for FD00{fd}\n")
+    
+    fd_tag = f"FD00{fd}" if isinstance(fd, int) else fd
 
-
-# -------------------------------------------------------------
-# 9. CLI ENTRY POINT
-# -------------------------------------------------------------
+    plot_actual_vs_predicted(y_test, y_pred, fd_tag)
+    plot_error_distribution(y_test, y_pred, fd_tag)
 
 if __name__ == "__main__":
 
     if len(sys.argv) == 1:
-        print("Usage: python main_all.py FD001 or python main_all.py all")
+        print("Usage: python main.py FD001 or python main.py all")
         sys.exit()
 
     arg = sys.argv[1]

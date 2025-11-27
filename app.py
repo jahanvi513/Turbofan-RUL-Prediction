@@ -86,7 +86,7 @@ def engineer_features(df):
     return df
 
 # DASHBOARD UI
-st.title("Turbofan Remaining Useful Life Predictor (NASA C-MAPSS)")
+st.title("Aircraft Turbofan Engine Remaining Useful Life Predictor")
 
 uploaded = st.file_uploader("Upload a turbofan TXT data file", type=["txt"])
 
